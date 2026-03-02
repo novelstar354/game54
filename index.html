@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>SAND BLOCKS Ω</title>
+<link rel="icon" href="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQKobz_PUtr0IcU0f4WDBQJ4Q55yVhFOV0nUQ&s" sizes="16×16" type="image/png" /> 
+<style>
+body{
+  margin:0;
+  background:#050510;
+  overflow:hidden;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  height:100vh;
+  color:white;
+  font-family:sans-serif;
+  user-select:none;
+}
+#ui{
+  position:absolute;
+  top:10px;
+  left:10px;
+  background:#0a0a2a;
+  padding:10px;
+  box-shadow:0 0 20px cyan;
+}
+canvas{
+  background:#070720;
+  box-shadow:0 0 40px cyan;
+}
+</style>
+</head>
+<body>
+
+<div id="ui">
+Score: <span id="score">0</span><br>
+Lines: <span id="lines">0</span><br>
+Combo: <span id="combo">0</span><br>
+</div>
+
+<canvas id="game"></canvas>
+
+<script>
+const COLS=10, ROWS=20;
+const SUB=8; // ★ 超微粒子化
+
+let CELL,SIZE,P_COLS,P_ROWS;
+let grid=[],current,nextPiece;
+let score=0,lines=0,combo=0;
+let paused=false,gameOver=false;
+let holdPiece=null,canHold=true;
+let messageTimer=0,messageText="";
+let counter=0;
+let effects=[];
+
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+const COLORS=["#ffee00","#00eaff","#ff00ff","#ff0033","#00ff66","#ff8800"];
+const SHAPES=[
+ [[1,1,1,1]],
+ [[1,1],[1,1]],
+ [[0,1,0],[1,1,1]]
+];
+
+function resize(){
+  const scale=Math.min(window.innerHeight/22,window.innerWidth/14);
+  CELL=Math.floor(scale);
+  SIZE=CELL/SUB;
+  canvas.width=CELL*COLS;
+  canvas.height=CELL*ROWS;
+  P_COLS=COLS*SUB;
+  P_ROWS=ROWS*SUB;
+}
+window.addEventListener("resize",resize);
+resize();
+
+function init(){
+  grid=[];
+  for(let y=0;y<P_ROWS;y++){
+    grid[y]=[];
+    for(let x=0;x<P_COLS;x++) grid[y][x]=null;
+  }
+  score=0;lines=0;combo=0;
+  holdPiece=null;nextPiece=null;canHold=true;
+  updateUI();
+}
+init();
+
+function randomPiece(){
+  return{
+    shape:JSON.parse(JSON.stringify(SHAPES[Math.floor(Math.random()*SHAPES.length)])),
+    x:3,y:0,
+    color:COLORS[Math.floor(Math.random()*COLORS.length)]
+  };
+}
+
+function newPiece(){
+  current=nextPiece||randomPiece();
+  nextPiece=randomPiece();
+  canHold=true;
+}
+
+function drawParticle(x,y,color){
+  ctx.shadowBlur=6;
+  ctx.shadowColor=color;
+  ctx.fillStyle=color;
+  ctx.fillRect(x*SIZE,y*SIZE,SIZE,SIZE);
+  ctx.shadowBlur=0;
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  // 粒子
+  for(let y=0;y<P_ROWS;y++){
+    for(let x=0;x<P_COLS;x++){
+      if(grid[y][x]) drawParticle(x,y,grid[y][x]);
+    }
+  }
+
+  // ゴースト
+  let oy=current.y;
+  while(true){
+    current.y++;
+    if(collide()){current.y--;break;}
+  }
+  let gy=current.y;
+  current.y=oy;
+
+  ctx.globalAlpha=0.25;
+  drawBlock(current,gy);
+  ctx.globalAlpha=1;
+
+  drawBlock(current,current.y);
+
+  // NEXT表示
+  if(nextPiece){
+    ctx.font="16px sans-serif";
+    ctx.fillStyle="#00ffff";
+    ctx.fillText("NEXT",canvas.width-80,20);
+
+    nextPiece.shape.forEach((row,dy)=>{
+      row.forEach((v,dx)=>{
+        if(v){
+          ctx.shadowBlur=10;
+          ctx.shadowColor=nextPiece.color;
+          ctx.fillStyle=nextPiece.color;
+          ctx.fillRect(
+            canvas.width-80+dx*15,
+            30+dy*15,
+            15,15
+          );
+          ctx.shadowBlur=0;
+        }
+      });
+    });
+  }
+
+  // HOLD
+  if(holdPiece){
+    ctx.fillText("HOLD",10,20);
+    holdPiece.shape.forEach((row,dy)=>{
+      row.forEach((v,dx)=>{
+        if(v){
+          ctx.shadowBlur=10;
+          ctx.shadowColor=holdPiece.color;
+          ctx.fillStyle=holdPiece.color;
+          ctx.fillRect(10+dx*15,30+dy*15,15,15);
+          ctx.shadowBlur=0;
+        }
+      });
+    });
+  }
+
+  // メッセージ
+  if(messageTimer>0){
+    ctx.font="bold 40px sans-serif";
+    ctx.fillStyle="#00ffff";
+    ctx.textAlign="center";
+    ctx.fillText(messageText,canvas.width/2,canvas.height/2);
+    messageTimer--;
+  }
+
+  if(gameOver){
+    ctx.fillStyle="rgba(0,0,0,0.8)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.font="bold 50px sans-serif";
+    ctx.fillStyle="#ff0033";
+    ctx.textAlign="center";
+    ctx.fillText("GAME OVER",canvas.width/2,canvas.height/2);
+  }
+    effects.forEach((e,i)=>{
+  ctx.globalAlpha = e.life/20;
+  ctx.fillStyle = e.color;
+  ctx.shadowBlur = 30;
+  ctx.shadowColor = e.color;
+  ctx.fillRect(e.x*SIZE,e.y*SIZE,10,10);
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  e.life--;
+  if(e.life<=0) effects.splice(i,1);
+});
+}
+
+function drawBlock(piece,py){
+  piece.shape.forEach((row,dy)=>{
+    row.forEach((v,dx)=>{
+      if(v){
+        ctx.shadowBlur=20;
+        ctx.shadowColor=piece.color;
+        ctx.fillStyle=piece.color;
+        ctx.fillRect((piece.x+dx)*CELL,(py+dy)*CELL,CELL,CELL);
+        ctx.shadowBlur=0;
+      }
+    });
+  });
+}
+
+function collide(){
+  for(let y=0;y<current.shape.length;y++){
+    for(let x=0;x<current.shape[y].length;x++){
+      if(current.shape[y][x]){
+        let nx=current.x+x;
+        let ny=current.y+y;
+        if(nx<0||nx>=COLS||ny>=ROWS) return true;
+        for(let sy=0;sy<SUB;sy++){
+          for(let sx=0;sx<SUB;sx++){
+            if(grid[ny*SUB+sy]?.[nx*SUB+sx]) return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function merge(){
+  current.shape.forEach((row,dy)=>{
+    row.forEach((v,dx)=>{
+      if(v){
+        for(let sy=0;sy<SUB;sy++){
+          for(let sx=0;sx<SUB;sx++){
+            grid[(current.y+dy)*SUB+sy][(current.x+dx)*SUB+sx]=current.color;
+          }
+        }
+      }
+    });
+  });
+}
+
+function updatePhysics() {
+
+  const updated = new Set();
+
+  // ===============================
+  // 粒子ごとの挙動
+  // ===============================
+  for (let y = P_ROWS - 2; y >= 0; y--) {
+    for (let x = 0; x < P_COLS; x++) {
+
+      const key = x + "," + y;
+      if (updated.has(key)) continue;
+
+      let c = grid[y][x];
+      if (!c) continue;
+
+      // 🟡 YELLOW 重量砂
+      if (c === "#ffee00") {
+        if (Math.random() < 0.35) {
+          if (!grid[y + 1]?.[x]) {
+            grid[y + 1][x] = c;
+            grid[y][x] = null;
+            updated.add(x + "," + (y + 1));
+            continue;
+          }
+        }
+        if (Math.random() < 0.15) {
+          let dir = Math.random() < 0.5 ? -1 : 1;
+          if (!grid[y + 1]?.[x + dir]) {
+            grid[y + 1][x + dir] = c;
+            grid[y][x] = null;
+            updated.add((x + dir) + "," + (y + 1));
+            continue;
+          }
+        }
+        continue;
+      }
+
+      // 🔵 CYAN 水（流体）
+      if (c === "#00eaff") {
+        if (!grid[y + 1]?.[x]) {
+          grid[y + 1][x] = c;
+          grid[y][x] = null;
+          updated.add(x + "," + (y + 1));
+          continue;
+        }
+        let dirs = [-1, 1];
+        dirs.sort(() => Math.random() - 0.5);
+        for (let dir of dirs) {
+          if (!grid[y + 1]?.[x + dir]) {
+            grid[y + 1][x + dir] = c;
+            grid[y][x] = null;
+            updated.add((x + dir) + "," + (y + 1));
+            break;
+          } else if (!grid[y]?.[x + dir]) {
+            grid[y][x + dir] = c;
+            grid[y][x] = null;
+            updated.add((x + dir) + "," + y);
+            break;
+          }
+        }
+        continue;
+      }
+
+      // 🟣 MAGENTA 反重力
+      if (c === "#ff00ff") {
+        if (y > 0 && !grid[y - 1]?.[x] && Math.random() < 0.2) {
+          grid[y - 1][x] = c;
+          grid[y][x] = null;
+          updated.add(x + "," + (y - 1));
+          continue;
+        }
+      }
+
+      // 🔴 RED マグマ
+      if (c === "#ff0033") {
+        if (Math.random() < 0.2) {
+          if (!grid[y + 1]?.[x]) {
+            grid[y + 1][x] = c;
+            grid[y][x] = null;
+            updated.add(x + "," + (y + 1));
+            continue;
+          }
+        }
+        let dirs = [-1, 1];
+        dirs.sort(() => Math.random() - 0.5);
+        for (let dir of dirs) {
+          if (!grid[y + 1]?.[x + dir] && Math.random() < 0.05) {
+            grid[y + 1][x + dir] = c;
+            grid[y][x] = null;
+            updated.add((x + dir) + "," + (y + 1));
+            break;
+          }
+        }
+        if (!grid[y + 1]?.[x] && Math.random() < 0.01) {
+          grid[y][x] = null;
+          effects.push({ x: x, y: y, life: 15, color: "#ff4400" });
+        }
+        continue;
+      }
+
+      // 🟠 ORANGE 弾性粒子
+      if (c === "#ff8800") {
+        if (Math.random() < 0.7) {
+          if (!grid[y + 1]?.[x]) {
+            grid[y + 1][x] = c;
+            grid[y][x] = null;
+            updated.add(x + "," + (y + 1));
+            continue;
+          } else {
+            let dir = Math.random() < 0.5 ? -1 : 1;
+            if (!grid[y]?.[x + dir]) {
+              grid[y][x + dir] = c;
+              grid[y][x] = null;
+              updated.add((x + dir) + "," + y);
+              continue;
+            }
+          }
+        }
+        continue;
+      }
+
+      // 🟢 LIME 拡散体
+      if (c === "#00ff66") {
+        let dirs = [-1, 1];
+        let dir = dirs[Math.floor(Math.random() * 2)];
+        if (!grid[y + 1]?.[x + dir]) {
+          grid[y + 1][x + dir] = c;
+          grid[y][x] = null;
+          updated.add((x + dir) + "," + (y + 1));
+          continue;
+        }
+      }
+
+      // 共通：砂の自然落下
+      if (!grid[y + 1]?.[x]) {
+        grid[y + 1][x] = c;
+        grid[y][x] = null;
+        updated.add(x + "," + (y + 1));
+      } else {
+        let dir = Math.random() < 0.5 ? -1 : 1;
+        if (!grid[y + 1]?.[x + dir]) {
+          grid[y + 1][x + dir] = c;
+          grid[y][x] = null;
+          updated.add((x + dir) + "," + (y + 1));
+        }
+      }
+    }
+  }
+
+  // ===============================
+  // 化学反応（拡張版）
+  // ===============================
+  for (let y = 0; y < P_ROWS; y++) {
+    for (let x = 0; x < P_COLS; x++) {
+      let c = grid[y][x];
+      if (!c) continue;
+
+      let neighbors = [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]];
+      for (let [nx, ny] of neighbors) {
+        if (nx < 0 || nx >= P_COLS || ny < 0 || ny >= P_ROWS) continue;
+        let n = grid[ny][nx];
+        if (!n) continue;
+
+        // 水 + 赤 = 蒸気
+        if ((c === "#00eaff" && n === "#ff0033") || (c === "#ff0033" && n === "#00eaff")) {
+          grid[y][x] = null;
+          grid[ny][nx] = null;
+          effects.push({ x: x, y: y, life: 20, color: "#ffffff" });
+          effects.push({ x: nx, y: ny, life: 20, color: "#ffffff" });
+        }
+
+        // 水 + オレンジ = 泡
+        if ((c === "#00eaff" && n === "#ff8800") || (c === "#ff8800" && n === "#00eaff")) {
+          [[0, 1], [1, 0], [0, -1], [-1, 0]].forEach(([dx, dy]) => {
+            let tx = x + dx, ty = y + dy;
+            if (tx >= 0 && tx < P_COLS && ty >= 0 && ty < P_ROWS && !grid[ty][tx]) {
+              grid[ty][tx] = "#00ffff";
+              effects.push({ x: tx, y: ty, life: 15, color: "#00ffff" });
+            }
+          });
+        }
+
+        // 赤 + 黄色 = 火花
+        if ((c === "#ff0033" && n === "#ffee00") || (c === "#ffee00" && n === "#ff0033")) {
+          grid[y][x] = null;
+          grid[ny][nx] = null;
+          effects.push({ x: x, y: y, life: 25, color: "#ff8800" });
+          effects.push({ x: nx, y: ny, life: 25, color: "#ff8800" });
+        }
+
+        // 紫 + 緑 = 蛍光化
+        if ((c === "#ff00ff" && n === "#00ff66") || (c === "#00ff66" && n === "#ff00ff")) {
+          grid[y][x] = "#00ff66";
+          grid[ny][nx] = "#00ff66";
+          effects.push({ x: x, y: y, life: 10, color: "#00ff66" });
+          effects.push({ x: nx, y: ny, life: 10, color: "#00ff66" });
+        }
+
+        // 水 + 紫 = フローラル
+        if ((c === "#00eaff" && n === "#ff00ff") || (c === "#ff00ff" && n === "#00eaff")) {
+          grid[y][x] = "#ff00ff";
+          grid[ny][nx] = "#ff00ff";
+          effects.push({ x: x, y: y, life: 15, color: "#ff00ff" });
+          effects.push({ x: nx, y: ny, life: 15, color: "#ff00ff" });
+        }
+
+        // 水 + 緑 = 泡拡散
+        if ((c === "#00eaff" && n === "#00ff66") || (c === "#00ff66" && n === "#00eaff")) {
+          [[0, 1], [1, 0], [0, -1], [-1, 0]].forEach(([dx, dy]) => {
+            let tx = x + dx, ty = y + dy;
+            if (tx >= 0 && tx < P_COLS && ty >= 0 && ty < P_ROWS && !grid[ty][tx]) {
+              grid[ty][tx] = "#00eaff";
+              effects.push({ x: tx, y: ty, life: 10, color: "#00eaff" });
+            }
+          });
+        }
+
+        // オレンジ + 赤 = 熔岩反応
+        if ((c === "#ff8800" && n === "#ff0033") || (c === "#ff0033" && n === "#ff8800")) {
+          grid[y][x] = "#ff0033";
+          grid[ny][nx] = "#ff0033";
+          effects.push({ x: x, y: y, life: 20, color: "#ff3300" });
+          effects.push({ x: nx, y: ny, life: 20, color: "#ff3300" });
+        }
+
+        // オレンジ + 黄色 = 小爆発
+        if ((c === "#ff8800" && n === "#ffee00") || (c === "#ffee00" && n === "#ff8800")) {
+          for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+              let tx = x + dx, ty = y + dy;
+              if (tx >= 0 && tx < P_COLS && ty >= 0 && ty < P_ROWS) {
+                effects.push({ x: tx, y: ty, life: 20, color: "#ff8800" });
+                grid[ty][tx] = null;
+              }
+            }
+          }
+        }
+
+        // 紫 + 赤 = 化学炎
+        if ((c === "#ff00ff" && n === "#ff0033") || (c === "#ff0033" && n === "#ff00ff")) {
+          grid[y][x] = "#ff0033";
+          grid[ny][nx] = "#ff0033";
+          effects.push({ x: x, y: y, life: 20, color: "#ff0033" });
+          effects.push({ x: nx, y: ny, life: 20, color: "#ff0033" });
+        }
+
+        // 緑 + 黄色 = 光化学反応
+        if ((c === "#00ff66" && n === "#ffee00") || (c === "#ffee00" && n === "#00ff66")) {
+          grid[y][x] = "#ffee00";
+          grid[ny][nx] = "#ffee00";
+          effects.push({ x: x, y: y, life: 15, color: "#ffee00" });
+          effects.push({ x: nx, y: ny, life: 15, color: "#ffee00" });
+        }
+
+      }
+    }
+  }
+
+  // ===============================
+  // 上部ライン圧迫による沈み（消えない）
+  // ===============================
+  const threshold = Math.floor(P_ROWS / 5);
+  for (let y = 0; y < threshold; y++) {
+    for (let x = 0; x < P_COLS; x++) {
+      if (grid[y][x] && !grid[y + 1]?.[x]) {
+        grid[y + 1][x] = grid[y][x];
+        grid[y][x] = null;
+      }
+    }
+  }
+
+}
+// 圧力崩壊の代わりに上部が押し下げられる処理
+
+// ===============================
+// 上部ライン圧迫による沈み処理
+// ===============================
+function sinkBlocks(){
+  const threshold = 5; // 上から何ラインで沈み始めるか（SUB単位で調整可能）
+  for(let y=0; y<threshold*SUB; y++){
+    for(let x=0; x<P_COLS; x++){
+      if(grid[y][x]){
+        // 下に空きがあれば沈む
+        if(!grid[y+1]?.[x]){
+          grid[y+1][x] = grid[y][x];
+          grid[y][x] = null;
+        }
+      }
+    }
+  }
+}
+function clearCheck(){
+  let cleared=false;
+
+  for(let by=0;by<ROWS;by++){
+    let streak=0,color=null;
+
+    for(let bx=0;bx<=COLS;bx++){
+      let c=bx<COLS?grid[by*SUB]?.[bx*SUB]:null;
+
+      if(c && c===color){
+        streak++;
+      }else{
+
+        if(streak>=5){
+
+          for(let i=1;i<=streak;i++){
+            for(let sy=0;sy<SUB;sy++){
+              for(let sx=0;sx<SUB;sx++){
+
+                // 🔥 エフェクト追加
+                effects.push({
+                  x:(bx-i)*SUB+sx,
+                  y:by*SUB+sy,
+                  life:20,
+                  color:color
+                });
+
+                grid[by*SUB+sy][(bx-i)*SUB+sx]=null;
+              }
+            }
+          }
+
+          cleared=true;
+        }
+
+        color=c;
+        streak=c?1:0;
+      }
+    }
+  }
+
+  if(cleared){
+    combo++;
+    lines++;
+    score += 500 * combo * combo;
+
+    if(combo>=3){
+      messageText = "COMBO x" + combo + " !!!";
+    }else{
+      messageText = "HORIZONTAL 5!";
+    }
+
+    messageTimer = 60;
+    updateUI();
+  }else{
+    combo=0;
+  }
+}
+
+function drop(){
+  current.y++;
+  if(collide()){
+    current.y--;
+    merge();
+    clearCheck();
+    newPiece();
+    if(collide()) gameOver=true;
+  }
+}
+
+function rotate(dir){
+  let m=current.shape;
+  let r=m[0].map((_,i)=>m.map(row=>row[i]));
+  if(dir>0) r.forEach(row=>row.reverse());
+  else r.reverse();
+  let ox=current.x,os=current.shape;
+  current.shape=r;
+  if(collide()){current.shape=os;current.x=ox;}
+}
+
+function updateUI(){
+  document.getElementById("score").textContent=score;
+  document.getElementById("lines").textContent=lines;
+  document.getElementById("combo").textContent=combo;
+}
+
+document.addEventListener("keydown",e=>{
+  if(e.key==="p") paused=!paused;
+  if(e.key==="r"){init();newPiece();gameOver=false;}
+  if(paused||gameOver) return;
+  if(e.key==="ArrowLeft"){current.x--;if(collide())current.x++;}
+  if(e.key==="ArrowRight"){current.x++;if(collide())current.x--;}
+  if(e.key==="ArrowDown") drop();
+  if(e.key==="ArrowUp") rotate(-1);
+  if(e.key==="a") rotate(-1);
+  if(e.key==="d") rotate(1);
+  if(e.key===" "){
+    while(!collide()) current.y++;
+    current.y--;drop();
+  }
+  if(e.key==="c") hold();
+});
+
+function hold(){
+  if(!canHold) return;
+  if(!holdPiece){
+    holdPiece={shape:JSON.parse(JSON.stringify(current.shape)),color:current.color};
+    newPiece();
+  }else{
+    let temp={shape:current.shape,color:current.color};
+    current.shape=JSON.parse(JSON.stringify(holdPiece.shape));
+    current.color=holdPiece.color;
+    current.x=3;current.y=0;
+    holdPiece=temp;
+  }
+  canHold=false;
+}
+
+function loop(){
+  if(!paused){
+    counter++;
+    if(counter>35){drop();counter=0;}
+      updatePhysics();
+sinkBlocks();
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+let touchStartX=0;
+
+canvas.addEventListener("touchstart",e=>{
+  touchStartX = e.touches[0].clientX;
+});
+
+canvas.addEventListener("touchmove",e=>{
+  let dx = e.touches[0].clientX - touchStartX;
+  if(dx>30){ current.x++; touchStartX=e.touches[0].clientX; }
+  if(dx<-30){ current.x--; touchStartX=e.touches[0].clientX; }
+});
+
+canvas.addEventListener("touchend",()=>{
+  drop();
+});
+newPiece();
+loop();
+</script>
+</body>
+</html>
