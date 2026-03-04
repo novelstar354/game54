@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>SAND BLOCKS  WORLD EDITION</title>
+<title>SAND BLOCKS WORLD EDITION</title>
 <link rel="icon" href="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQKobz_PUtr0IcU0f4WDBQJ4Q55yVhFOV0nUQ&s" sizes="16×16" type="image/png" /> 
 <style>
 body{
@@ -775,4 +775,195 @@ function clearCheck(){
   for(let by=0;by<ROWS;by++){
     let streak=0,color=null;
 
-   
+    for(let bx=0;bx<=COLS;bx++){
+      let c=bx<COLS?grid[by*SUB]?.[bx*SUB]:null;
+
+      if(c && c===color){
+        streak++;
+      }else{
+
+        if(streak>=5){
+
+          for(let i=1;i<=streak;i++){
+            for(let sy=0;sy<SUB;sy++){
+              for(let sx=0;sx<SUB;sx++){
+
+                // 🔥 エフェクト追加
+                effects.push({
+                  x:(bx-i)*SUB+sx,
+                  y:by*SUB+sy,
+                  life:20,
+                  color:color
+                });
+
+                grid[by*SUB+sy][(bx-i)*SUB+sx]=null;
+              }
+            }
+          }
+
+          cleared=true;
+        }
+
+        color=c;
+        streak=c?1:0;
+      }
+    }
+  }
+
+  if(cleared){
+    combo++;
+    lines++;
+    score += 500 * combo * combo;
+
+    if(combo>=3){
+      messageText = "COMBO x" + combo + " !!!";
+    }else{
+      messageText = "HORIZONTAL 5";
+    }
+
+    messageTimer = 60;
+    updateUI();
+  }else{
+    combo=0;
+  }
+}
+function updateTemperature(){
+
+  // ===============================
+  // ① 高度による基本気温（気候ゾーン）
+  // ===============================
+  for(let y=0;y<P_ROWS;y++){
+    for(let x=0;x<P_COLS;x++){
+
+      // 上は寒い / 下は暑い
+      let heightRatio = y / P_ROWS;
+
+      // -50 ～ +150 の縦グラデーション
+      let baseTemp = -50 + heightRatio * 200;
+
+      temp[y][x] += (baseTemp - temp[y][x]) * 0.02;
+    }
+  }
+
+  // ===============================
+  // ② 熱源
+  // ===============================
+  for(let y=0;y<P_ROWS;y++){
+    for(let x=0;x<P_COLS;x++){
+      let c = grid[y][x];
+
+      if(c==="#ff0033") temp[y][x]=200;   // マグマ
+      if(c==="#ff4444") temp[y][x]=400;   // 爆熱体
+    }
+  }
+
+  // ===============================
+  // ③ 温度拡散
+  // ===============================
+  let newTemp = JSON.parse(JSON.stringify(temp));
+
+  for(let y=1;y<P_ROWS-1;y++){
+    for(let x=1;x<P_COLS-1;x++){
+      let avg =
+        (temp[y][x] +
+         temp[y+1][x] +
+         temp[y-1][x] +
+         temp[y][x+1] +
+         temp[y][x-1]) / 5;
+
+      newTemp[y][x] = avg * 0.995; // 少し冷却
+    }
+  }
+
+  temp = newTemp;
+}
+function drop(){
+  current.y++;
+  if(collide()){
+    current.y--;
+    merge();
+    clearCheck();
+    newPiece();
+    if(collide()) gameOver=true;
+  }
+}
+
+function rotate(dir){
+  let m=current.shape;
+  let r=m[0].map((_,i)=>m.map(row=>row[i]));
+  if(dir>0) r.forEach(row=>row.reverse());
+  else r.reverse();
+  let ox=current.x,os=current.shape;
+  current.shape=r;
+  if(collide()){current.shape=os;current.x=ox;}
+}
+
+function updateUI(){
+  document.getElementById("score").textContent=score;
+  document.getElementById("lines").textContent=lines;
+  document.getElementById("combo").textContent=combo;
+}
+
+document.addEventListener("keydown",e=>{
+  if(e.key==="p") paused=!paused;
+  if(e.key==="r"){init();newPiece();gameOver=false;}
+  if(paused||gameOver) return;
+  if(e.key==="ArrowLeft"){current.x--;if(collide())current.x++;}
+  if(e.key==="ArrowRight"){current.x++;if(collide())current.x--;}
+  if(e.key==="ArrowDown") drop();
+  if(e.key==="ArrowUp") rotate(-1);
+  if(e.key==="a") rotate(-1);
+  if(e.key==="d") rotate(1);
+  if(e.key===" "){
+    while(!collide()) current.y++;
+    current.y--;drop();
+  }
+  if(e.key==="c") hold();
+});
+
+function hold(){
+  if(!canHold) return;
+  if(!holdPiece){
+    holdPiece={shape:JSON.parse(JSON.stringify(current.shape)),color:current.color};
+    newPiece();
+  }else{
+    let temp={shape:current.shape,color:current.color};
+    current.shape=JSON.parse(JSON.stringify(holdPiece.shape));
+    current.color=holdPiece.color;
+    current.x=3;current.y=0;
+    holdPiece=temp;
+  }
+  canHold=false;
+}
+
+function loop(){
+  if(!paused){
+    counter++;
+    if(counter>35){drop();counter=0;}
+      updatePhysics();
+sinkBlocks();
+    draw();
+  }
+  requestAnimationFrame(loop);
+}
+let touchStartX=0;
+
+canvas.addEventListener("touchstart",e=>{
+  touchStartX = e.touches[0].clientX;
+});
+
+canvas.addEventListener("touchmove",e=>{
+  let dx = e.touches[0].clientX - touchStartX;
+  if(dx>30){ current.x++; touchStartX=e.touches[0].clientX; }
+  if(dx<-30){ current.x--; touchStartX=e.touches[0].clientX; }
+});
+
+canvas.addEventListener("touchend",()=>{
+  drop();
+});
+init();
+newPiece();
+loop();
+</script>
+</body>
+</html>
